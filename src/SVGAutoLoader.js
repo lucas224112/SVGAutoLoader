@@ -1,60 +1,82 @@
-async function loadSvg(svgUrl) {return fetch(svgUrl).then(res => {return res.text()});}
+const svgCache = new Map();
+const loadingSvgs = new Map();
 
-async function setSvg(svgElement){
-    if (svgElement.getAttribute('src')) {
-        const tempElement = document.createElement('div');
-        tempElement.innerHTML = await loadSvg(svgElement.getAttribute('src'))
+async function loadSvg(url) {
+    if (loadingSvgs.has(url)) return loadingSvgs.get(url);
 
-        const tempSvgElement = tempElement.querySelector('svg');
+    const promise = fetch(url).then(res => {
+            if (!res.ok) throw new Error(`Erro ao carregar SVG: ${url}`);
+            return res.text();
+        }).then(text => {
+            svgCache.set(url, text);
+            loadingSvgs.delete(url);
+            return text;
+        }).catch(err => {
+            console.error(err);
+            loadingSvgs.delete(url);
+            return null;
+        });
 
-        if (tempSvgElement) {
-            if (tempSvgElement.getAttribute('viewBox')) {
-                svgElement.setAttribute("viewBox", tempSvgElement.getAttribute('viewBox'));
-            }
-            if (tempSvgElement.getAttribute('xmlns')) {
-                svgElement.setAttribute("xmlns", tempSvgElement.getAttribute('xmlns'));
-            }
+    loadingSvgs.set(url, promise);
+    return promise;
+}
 
-            svgElement.innerHTML = ""
-            tempSvgElement.querySelectorAll('path').forEach(function(pathElement) {
-                svgElement.appendChild(pathElement);
-            });
-        }
+async function setSvg(svgElement) {
+    const src = svgElement.getAttribute('src');
+    if (!src) return;
+
+    const rawSvg = svgCache.get(src) || await loadSvg(src);
+    if (!rawSvg) return;
+
+    const temp = document.createElement('div');
+    temp.innerHTML = rawSvg;
+    const svg = temp.querySelector('svg');
+    if (!svg) return;
+
+    if (svg.getAttribute('viewBox')) svgElement.setAttribute('viewBox', svg.getAttribute('viewBox'));
+    if (svg.getAttribute('xmlns')) svgElement.setAttribute('xmlns', svg.getAttribute('xmlns'));
+
+    svgElement.innerHTML = '';
+    if (svgElement.hasAttribute('title')) {
+        const title = document.createElement('title');
+        title.textContent = svgElement.getAttribute('title');
+        svgElement.appendChild(title);
     }
+
+    Array.from(svg.children).forEach(child => svgElement.appendChild(child.cloneNode(true)));
 }
 
-async function observeAttributes(svgElement) {
-    const attributeObserver = new MutationObserver(mutationsList => {
-        mutationsList.forEach(mutation => {
-            if (mutation.type === 'attributes' && mutation.attributeName === 'src') {
-                setSvg(mutation.target);
+function observeAttributes(svgElement) {
+    const obs = new MutationObserver(mutations => {
+        for (const m of mutations) {
+            if (m.type === 'attributes' && m.attributeName === 'src') {
+                setSvg(svgElement);
             }
-        });
+        }
     });
-    attributeObserver.observe(svgElement, { attributes: true });
+    obs.observe(svgElement, { attributes: true });
 }
 
-async function observeSVGs() {
-    document.querySelectorAll('svg').forEach(function(svgElement) {
-        setSvg(svgElement);
-        observeAttributes(svgElement);
-    });
+function observeSVGs() {
+    const processSvg = svg => {
+        setSvg(svg);
+        observeAttributes(svg);
+    };
 
-    const observer = new MutationObserver(mutationsList => {
-        mutationsList.forEach(mutation => {
-            if (mutation.type === 'childList') {
-                mutation.addedNodes.forEach(node => {
-                    if (node.tagName === 'svg' || node.tagName === 'SVG') {
-                        setSvg(node);
-                        observeAttributes(node);
-                    } else {node.querySelectorAll && node.querySelectorAll('svg').forEach(svgElement => {
-                            setSvg(svgElement);
-                            observeAttributes(svgElement);
-                        });
-                    }
-                });
+    document.querySelectorAll('svg[src]').forEach(processSvg);
+
+    const observer = new MutationObserver(mutations => {
+        for (const m of mutations) {
+            for (const node of m.addedNodes) {
+                if (node.nodeType !== 1) continue;
+
+                if (node.matches?.('svg[src]')) {
+                    processSvg(node);
+                } else {
+                    node.querySelectorAll?.('svg[src]').forEach(processSvg);
+                }
             }
-        });
+        }
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
